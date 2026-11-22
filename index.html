@@ -55,6 +55,18 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .actions button { border: 0; border-radius: 6px; padding: 8px 14px; font: inherit; cursor: pointer; background: var(--hit); color: #fff; }
 .actions button.sec { background: var(--key); color: var(--fg); }
+#hintbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center; max-width: 500px; margin-bottom: 14px; font-size: .9rem; }
+#hintBtn { border: 1px solid var(--line); background: none; color: var(--fg); border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+#hintBtn:disabled { opacity: .4; cursor: default; }
+#hints span { background: var(--key); border-radius: 4px; padding: 3px 8px; font-weight: 600; }
+#qte { text-align: center; user-select: none; }
+.dial { position: relative; width: 200px; height: 200px; margin: 16px auto; border: 3px solid var(--line); border-radius: 50%; }
+#zone { position: absolute; inset: -3px; border-radius: 50%;
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 14px), #000 calc(100% - 13px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 14px), #000 calc(100% - 13px)); }
+#needle { position: absolute; left: calc(50% - 2px); top: 4px; width: 4px; height: calc(50% - 4px);
+  background: #c0392b; border-radius: 2px; transform-origin: 50% 100%; }
+#qteMsg { min-height: 1.4em; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -68,6 +80,7 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 </header>
 <div id="msg" role="status"></div>
 <div id="board"></div>
+<div id="hintbar"><button id="hintBtn"></button><span id="hints"></span></div>
 <div id="keyboard"></div>
 <div id="settings">
   <label><input type="checkbox" id="optUmlaute"> Umlaute aktivieren</label>
@@ -83,7 +96,14 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
   <p><b>Doppelte Buchstaben:</b> Jedes gelbe oder grüne Feld steht für ein eigenes Vorkommen im Lösungswort. Sind zwei gleiche Buchstaben gelb, kommt er mindestens zweimal vor. Kommt er nur einmal vor, wird ein Feld gelb oder grün und das andere grau. Ist ein Exemplar grau, kennst du die genaue Anzahl.</p>
   <p>Die Tastatur zeigt nur die beste Farbe je Buchstabe. Wie oft er vorkommt, siehst du auf dem Spielfeld.</p>
   <p>Erlaubt sind nur Wörter aus dem deutschen Wörterbuch.</p>
+  <p><b>Hinweis:</b> Pro Wort hast du drei Versuche. Stoppe die Nadel mit Leertaste oder Tippen. Im gelben Feld erfährst du einen Buchstaben, im schmalen grünen Feld, wo ein Buchstabe steht. Daneben gibt es nichts.</p>
   <div class="actions"><button onclick="this.closest('dialog').close()">Los</button></div>
+</dialog>
+
+<dialog id="qte">
+  <h2>Hinweis</h2>
+  <div class="dial"><div id="zone"></div><div id="needle"></div></div>
+  <p id="qteMsg"></p>
 </dialog>
 
 <dialog id="statsDlg">
@@ -616,10 +636,11 @@ ZÜCKT ZÜGEL ZÜGEN ZÜGIG ZÜGLE ZÜNDE ZÜRNE ZÜRNT ÄBERE ÄBSCH ÄBTEN ÄC
 const ROWS = 6, COLS = 5;
 const KEYS = ["QWERTZUIOPÜ", "ASDFGHJKLÖÄ", "↵YXCVBNMß⌫"];
 const RANK = { miss: 1, near: 2, hit: 3 };
+const HINTS = 3, GREAT = 14, GOOD = 46, SPIN = 1100;
 const $ = id => document.getElementById(id);
 
 const settings = { umlaute: load("fuenfer-umlaute", true), szett: load("fuenfer-szett", false) };
-let WORDS, ALLOWED, solution, guesses, current, done;
+let WORDS, ALLOWED, solution, guesses, current, done, hints, hintsLeft, qte;
 
 function applySettings() {
   const fit = list => [...new Set(list.split(/\s+/).filter(Boolean)
@@ -653,17 +674,77 @@ function buildBoard() {
 
 function newGame() {
   solution = WORDS[Math.floor(Math.random() * WORDS.length)];
-  guesses = []; current = ""; done = false;
-  save("fuenfer-game", { solution, guesses });
-  buildBoard(); setMsg("");
+  guesses = []; current = ""; done = false; hints = []; hintsLeft = HINTS;
+  saveGame();
+  buildBoard(); renderHints(); setMsg("");
 }
+
+function saveGame() { save("fuenfer-game", { solution, guesses, hints, hintsLeft }); }
 
 function resume() {
   const g = load("fuenfer-game", null);
   if (!g || !WORDS.includes(g.solution) || g.guesses.length >= ROWS || g.guesses.includes(g.solution)) return newGame();
-  solution = g.solution; guesses = []; current = ""; done = false;
-  buildBoard();
+  solution = g.solution; guesses = []; current = ""; done = false; hints = g.hints || []; hintsLeft = g.hintsLeft ?? HINTS;
+  buildBoard(); renderHints();
   g.guesses.forEach(w => { guesses.push(w); paintRow(guesses.length - 1, w, false); });
+}
+
+function knownCount(c) {
+  const fromGuesses = guesses.map(w => evaluate(w).filter((r, i) => r !== "miss" && [...w][i] === c).length);
+  return Math.max(0, ...fromGuesses, hints.filter(h => h.c === c).length);
+}
+
+// Great reveals a position (preferably of a letter already known to be yellow), good reveals a letter.
+function pickHint(great) {
+  const s = [...solution];
+  const open = s.map((c, i) => i).filter(i => !guesses.some(w => [...w][i] === s[i]) && !hints.some(h => h.i === i));
+  const unknown = open.filter(i => s.filter(c => c === s[i]).length > knownCount(s[i]));
+  if (!great && unknown.length) return { c: s[unknown[Math.floor(Math.random() * unknown.length)]] };
+  const yellow = open.filter(i => knownCount(s[i]) > 0), pool = yellow.length ? yellow : open;
+  if (!pool.length) return null;
+  const i = pool[Math.floor(Math.random() * pool.length)];
+  return { c: s[i], i };
+}
+
+function hintText(h) { return h.i === undefined ? `Enthält ${h.c}` : `${h.c} an Stelle ${h.i + 1}`; }
+
+function renderHints() {
+  $("hints").innerHTML = hints.map(h => `<span>${hintText(h)}</span>`).join("");
+  $("hintBtn").textContent = `Tipp (${hintsLeft})`;
+  $("hintBtn").disabled = done || !hintsLeft;
+}
+
+function startQte() {
+  if (done || !hintsLeft) return;
+  hintsLeft--; saveGame(); renderHints();
+  const zone = 110 + Math.random() * 180;
+  $("zone").style.background = `conic-gradient(from ${zone}deg, var(--hit) 0 ${GREAT}deg, var(--near) 0 ${GREAT + GOOD}deg, transparent 0)`;
+  $("needle").style.transform = "rotate(0deg)";
+  $("qteMsg").textContent = "Leertaste oder tippen";
+  $("qte").showModal();
+  qte = { zone, angle: 0, ended: false, start: performance.now() + 400 + Math.random() * 600 };
+  qte.frame = requestAnimationFrame(spin);
+}
+
+function spin(now) {
+  qte.angle = Math.max(0, now - qte.start) / SPIN * 360;
+  if (qte.angle >= 360) return endQte(null);
+  $("needle").style.transform = `rotate(${qte.angle}deg)`;
+  qte.frame = requestAnimationFrame(spin);
+}
+
+function stopQte() {
+  if (!qte || qte.ended) return;
+  const d = qte.angle - qte.zone;
+  endQte(d >= 0 && d < GREAT ? "great" : d >= 0 && d < GREAT + GOOD ? "good" : null);
+}
+
+function endQte(result) {
+  cancelAnimationFrame(qte.frame); qte.ended = true;
+  const hint = result && pickHint(result === "great");
+  if (hint) { hints.push(hint); saveGame(); renderHints(); }
+  $("qteMsg").textContent = !result ? "Daneben, kein Hinweis" : hint ? `${result === "great" ? "Perfekt" : "Gut"}: ${hintText(hint)}` : "Du kennst schon alle Buchstaben";
+  setTimeout(() => $("qte").close(), 1400);
 }
 
 function evaluate(guess) {
@@ -709,7 +790,7 @@ function submit() {
   save("fuenfer-game", { solution, guesses });
   paintRow(row, word, true);
   if (word === solution || guesses.length === ROWS) {
-    done = true;
+    done = true; renderHints();
     const won = word === solution;
     recordStats(won, guesses.length);
     setTimeout(() => {
@@ -747,6 +828,7 @@ function showStats(text) {
 
 $("keyboard").addEventListener("click", e => { const k = e.target.closest("button")?.dataset.k; if (k) press(k); });
 document.addEventListener("keydown", e => {
+  if ($("qte").open) { if (e.key === " " || e.key === "Enter") { e.preventDefault(); stopQte(); } return; }
   if (e.ctrlKey || e.metaKey || e.altKey || document.querySelector("dialog[open]")) return;
   if (e.key === "Enter") press("↵");
   else if (e.key === "Backspace") press("⌫");
@@ -766,6 +848,9 @@ $("helpBtn").onclick = () => $("help").showModal();
 $("statsBtn").onclick = () => showStats(done ? (guesses.includes(solution) ? `Gelöst in ${guesses.length}/${ROWS}` : `Das Wort war ${solution}`) : "");
 $("newBtn").onclick = () => { $("statsDlg").close(); newGame(); };
 $("newTopBtn").onclick = e => { e.currentTarget.blur(); newGame(); };
+$("hintBtn").onclick = e => { e.currentTarget.blur(); startQte(); };
+$("qte").addEventListener("pointerdown", stopQte);
+$("qte").addEventListener("cancel", e => e.preventDefault());
 
 applySettings();
 resume();
