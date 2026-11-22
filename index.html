@@ -36,11 +36,15 @@ header button { background: none; border: 1px solid var(--line); color: var(--fg
 .tile.hit, .tile.near, .tile.miss { color: #fff; border-color: transparent; }
 .hit { background: var(--hit) !important; } .near { background: var(--near) !important; } .miss { background: var(--miss) !important; }
 #keyboard { width: 100%; max-width: 500px; display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; }
-.krow { display: flex; gap: 4px; justify-content: center; }
-.krow button { flex: 1; min-width: 0; height: 54px; border: 0; border-radius: 5px; background: var(--key); color: var(--fg);
-  font: inherit; font-weight: 700; cursor: pointer; padding: 0; }
-.krow button.wide { flex: 1.6; font-size: .8rem; }
+.krow { display: flex; gap: 6px; justify-content: center; }
+.krow button { flex: 1; min-width: 0; height: 48px; border: 1px solid var(--line); border-radius: 6px; background: var(--tile);
+  box-shadow: 0 2px 0 var(--line); color: var(--fg); font: inherit; font-weight: 700; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.krow button:active { transform: translateY(1px); box-shadow: 0 1px 0 var(--line); }
+.krow button.wide { flex: 1.6; font-size: .85rem; }
+.krow button[data-k="↵"] { flex: 2.4; }
 .krow button.hit, .krow button.near, .krow button.miss { color: #fff; }
+.krow button.miss { opacity: .5; }
 #settings { display: flex; flex-wrap: wrap; gap: 8px 20px; justify-content: center; margin-bottom: 24px; font-size: .9rem; color: var(--muted); }
 #settings label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 #settings input { accent-color: var(--hit); width: 16px; height: 16px; }
@@ -667,7 +671,9 @@ function buildBoard() {
   $("board").innerHTML = Array.from({ length: ROWS }, () =>
     `<div class="row">${'<div class="tile"></div>'.repeat(COLS)}</div>`).join("");
   $("keyboard").innerHTML = KEYS.map(r => `<div class="krow">${[...r].filter(keyEnabled).map(k => {
-    const label = k === "↵" ? "ENTER" : k === "⌫" ? "⌫" : k;
+    const label = k === "↵" ? "Enter" : k === "⌫"
+      ? '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" aria-label="Löschen"><path d="M21 5H8l-6 7 6 7h13z"/><path d="M11 9l6 6M17 9l-6 6"/></svg>'
+      : k;
     return `<button data-k="${k}" class="${k === "↵" || k === "⌫" ? "wide" : ""}">${label}</button>`;
   }).join("")}</div>`).join("");
 }
@@ -691,7 +697,8 @@ function resume() {
 
 function knownCount(c) {
   const fromGuesses = guesses.map(w => evaluate(w).filter((r, i) => r !== "miss" && [...w][i] === c).length);
-  return Math.max(0, ...fromGuesses, hints.filter(h => h.c === c).length);
+  const own = hints.filter(h => h.c === c);
+  return Math.max(0, ...fromGuesses, own.filter(h => h.i !== undefined).length, ...own.map(h => h.n || 1));
 }
 
 // Great reveals a position (preferably of a letter already known to be yellow), good reveals a letter.
@@ -699,14 +706,21 @@ function pickHint(great) {
   const s = [...solution];
   const open = s.map((c, i) => i).filter(i => !guesses.some(w => [...w][i] === s[i]) && !hints.some(h => h.i === i));
   const unknown = open.filter(i => s.filter(c => c === s[i]).length > knownCount(s[i]));
-  if (!great && unknown.length) return { c: s[unknown[Math.floor(Math.random() * unknown.length)]] };
+  const fresh = unknown.filter(i => !knownCount(s[i])), letters = fresh.length ? fresh : unknown;
+  if (!great && letters.length) {
+    const c = s[letters[Math.floor(Math.random() * letters.length)]];
+    return { c, n: knownCount(c) + 1 };
+  }
   const yellow = open.filter(i => knownCount(s[i]) > 0), pool = yellow.length ? yellow : open;
   if (!pool.length) return null;
   const i = pool[Math.floor(Math.random() * pool.length)];
   return { c: s[i], i };
 }
 
-function hintText(h) { return h.i === undefined ? `Enthält ${h.c}` : `${h.c} an Stelle ${h.i + 1}`; }
+function hintText(h) {
+  if (h.i !== undefined) return `${h.c} an Stelle ${h.i + 1}`;
+  return h.n > 1 ? `Enthält ${h.n}× ${h.c}` : `Enthält ${h.c}`;
+}
 
 function renderHints() {
   $("hints").innerHTML = hints.map(h => `<span>${hintText(h)}</span>`).join("");
